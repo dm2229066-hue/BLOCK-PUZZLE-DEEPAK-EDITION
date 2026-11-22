@@ -201,6 +201,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({
     setActiveTargetBooster(null);
     setBuyBoosterPrompt(null);
     runRecordedRef.current = false;
+    adManager.preloadNext().catch(() => {});
   }, [sessionMeta]);
 
   useEffect(() => {

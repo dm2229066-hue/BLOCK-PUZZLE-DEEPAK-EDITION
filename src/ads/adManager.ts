@@ -21,6 +21,8 @@ export interface AdStatusResult {
   adUnitId: string;
   canRequestAds: boolean;
   privacyOptionsRequired: boolean;
+  lastLoadErrorCode?: number;
+  lastLoadErrorMessage?: string;
 }
 
 interface AdMobInterstitialNativePlugin {
@@ -45,6 +47,7 @@ const AdMobInterstitial = registerPlugin<AdMobInterstitialNativePlugin>('AdMobIn
 
 export const MIN_INTERSTITIAL_INTERVAL_MS = 120_000; // 120 seconds
 export const COMPLETED_LEVELS_PER_AD = 3;
+const INIT_TIMEOUT_MS = 7_500;
 
 export type AdBreakTrigger =
   | 'level_complete'
@@ -155,7 +158,6 @@ class AdManager {
 
       try {
         if (!this.listenersAttached) {
-          this.listenersAttached = true;
           await AdMobInterstitial.addListener('adOpened', () => {
             soundEngine.handleVisibilityChange(true);
           });
@@ -165,11 +167,17 @@ class AdManager {
           await AdMobInterstitial.addListener('adFailedToShow', () => {
             soundEngine.handleVisibilityChange(false);
           });
+          this.listenersAttached = true;
         }
 
-        const res = await AdMobInterstitial.initialize();
-        this.privacyOptionsRequired = Boolean(res?.privacyOptionsRequired);
-        this.isNativeInitialized = Boolean(res?.initialized);
+        const res = await Promise.race<AdInitResult | null>([
+          AdMobInterstitial.initialize(),
+          new Promise<null>((resolve) => window.setTimeout(() => resolve(null), INIT_TIMEOUT_MS)),
+        ]);
+        if (res) {
+          this.privacyOptionsRequired = Boolean(res.privacyOptionsRequired);
+          this.isNativeInitialized = Boolean(res.initialized);
+        }
         if (!this.isNativeInitialized) {
           this.initPromise = null;
         }
