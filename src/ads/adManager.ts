@@ -55,8 +55,9 @@ interface AdMobInterstitialNativePlugin {
 
 const AdMobInterstitial = registerPlugin<AdMobInterstitialNativePlugin>('AdMobInterstitial');
 
-export const MIN_INTERSTITIAL_INTERVAL_MS = 120_000; // 120 seconds
-export const COMPLETED_LEVELS_PER_AD = 3;
+export const MIN_INTERSTITIAL_INTERVAL_MS = 120_000; // 120 seconds for menu/pause/game-over breaks
+export const MIN_LEVEL_AD_DEBOUNCE_MS = 1_500; // prevents accidental double-tap triggers
+export const COMPLETED_LEVELS_PER_AD = 1;
 const INIT_TIMEOUT_MS = 7_500;
 
 export type AdBreakTrigger =
@@ -116,6 +117,13 @@ export class InterstitialFrequencyController {
       if (this.completedLevelsCount === 0 || this.completedLevelsCount % COMPLETED_LEVELS_PER_AD !== 0) {
         return { allowed: false, reason: 'level_frequency_gate' };
       }
+      if (
+        this.lastAdShownAtMs !== null &&
+        nowMs - this.lastAdShownAtMs < MIN_LEVEL_AD_DEBOUNCE_MS
+      ) {
+        return { allowed: false, reason: 'double_tap_debounce' };
+      }
+      return { allowed: true };
     }
 
     if (

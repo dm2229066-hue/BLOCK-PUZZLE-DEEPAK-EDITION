@@ -141,24 +141,26 @@ adCtrl.setActiveGameplay(true);
 assert.equal(adCtrl.canShowAtBreak('game_over', t0).allowed, false, 'Must block during active gameplay');
 adCtrl.setActiveGameplay(false);
 
-// Level frequency gate: only every 3rd completed level
-assert.equal(COMPLETED_LEVELS_PER_AD, 3);
+// Level frequency gate: after every completed level
+assert.equal(COMPLETED_LEVELS_PER_AD, 1);
 adCtrl.recordLevelCompleted(); // 1
-assert.equal(adCtrl.canShowAtBreak('level_complete', t0).allowed, false, 'Skip after level 1');
+assert.equal(adCtrl.canShowAtBreak('level_complete', t0).allowed, true, 'Allow after level 1');
+adCtrl.markAdShown(t0);
 adCtrl.recordLevelCompleted(); // 2
-assert.equal(adCtrl.canShowAtBreak('level_complete', t0).allowed, false, 'Skip after level 2');
+assert.equal(adCtrl.canShowAtBreak('level_complete', t0 + 25_000).allowed, true, 'Allow after level 2 without 120s block');
+adCtrl.markAdShown(t0 + 25_000);
 adCtrl.recordLevelCompleted(); // 3
-assert.equal(adCtrl.canShowAtBreak('level_complete', t0).allowed, true, 'Allow after 3rd completed level');
+assert.equal(adCtrl.canShowAtBreak('level_complete', t0 + 50_000).allowed, true, 'Allow after level 3');
 
 // Simultaneous ad block
 adCtrl.setShowing(true);
-assert.equal(adCtrl.canShowAtBreak('level_complete', t0).allowed, false, 'Never show simultaneous ads');
+assert.equal(adCtrl.canShowAtBreak('level_complete', t0 + 60_000).allowed, false, 'Never show simultaneous ads');
 adCtrl.setShowing(false);
 
-// 120-second minimum cooldown after an ad is actually shown
+// 120-second minimum cooldown still applies to non-level menu/game-over breaks
 adCtrl.markAdShown(t0);
-assert.equal(adCtrl.canShowAtBreak('game_over', t0 + 60_000).allowed, false, 'Block within 120s cooldown');
+assert.equal(adCtrl.canShowAtBreak('game_over', t0 + 60_000).allowed, false, 'Block game_over within 120s cooldown');
 assert.equal(adCtrl.canShowAtBreak('return_to_menu', t0 + MIN_INTERSTITIAL_INTERVAL_MS, { meaningfulPlay: false }).allowed, false, 'Block return to menu without meaningful play');
-assert.equal(adCtrl.canShowAtBreak('game_over', t0 + MIN_INTERSTITIAL_INTERVAL_MS).allowed, true, 'Allow after >= 120s cooldown');
+assert.equal(adCtrl.canShowAtBreak('game_over', t0 + MIN_INTERSTITIAL_INTERVAL_MS).allowed, true, 'Allow game_over after >= 120s cooldown');
 
 console.log('ALL GAME ENGINE, 1,050-LEVEL & ADMOB FREQUENCY TESTS PASSED!');

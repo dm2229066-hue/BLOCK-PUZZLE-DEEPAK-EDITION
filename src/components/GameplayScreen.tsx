@@ -264,6 +264,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({
       if (runRecordedRef.current) return;
       runRecordedRef.current = true;
       setStatus('won');
+      adManager.setActiveGameplay(false);
       adManager.recordLevelCompleted();
       adManager.preloadNext().catch(() => {});
       soundEngine.playSfx('levelComplete');
@@ -332,6 +333,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({
       runRecordedRef.current = true;
       setLossReason(reason);
       setStatus('lost');
+      adManager.setActiveGameplay(false);
       adManager.preloadNext().catch(() => {});
       soundEngine.playSfx('gameOver');
       triggerHaptic(save.settings.hapticsEnabled, 45);
