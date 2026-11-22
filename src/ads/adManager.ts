@@ -105,7 +105,10 @@ export class InterstitialFrequencyController {
       }
     }
 
-    if (trigger === 'return_to_menu' && options?.meaningfulPlay === false) {
+    if (
+      (trigger === 'return_to_menu' || trigger === 'between_sessions') &&
+      options?.meaningfulPlay === false
+    ) {
       return { allowed: false, reason: 'no_meaningful_play' };
     }
 
@@ -136,13 +139,17 @@ class AdManager {
   private privacyOptionsRequired = false;
   private listenersAttached = false;
 
+  private isNativeInitialized = false;
+
   public async initialize(): Promise<void> {
+    if (this.isNativeInitialized) return;
     if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {
       this.controller.markInitialized();
       if (!Capacitor.isNativePlatform()) {
         // Web browser: never simulate ads or show fake HTML ads
+        this.isNativeInitialized = true;
         return;
       }
 
@@ -162,8 +169,13 @@ class AdManager {
 
         const res = await AdMobInterstitial.initialize();
         this.privacyOptionsRequired = Boolean(res?.privacyOptionsRequired);
+        this.isNativeInitialized = Boolean(res?.initialized);
+        if (!this.isNativeInitialized) {
+          this.initPromise = null;
+        }
       } catch {
-        // Offline or plugin unavailable: continue game normally
+        // Offline or plugin unavailable: allow retrying later without blocking gameplay
+        this.initPromise = null;
       }
     })();
 
@@ -181,6 +193,9 @@ class AdManager {
   public async preloadNext(): Promise<void> {
     if (!Capacitor.isNativePlatform()) return;
     try {
+      if (!this.isNativeInitialized) {
+        await this.initialize();
+      }
       await AdMobInterstitial.preload();
     } catch {
       // Ignore preload errors; never block gameplay
@@ -191,6 +206,10 @@ class AdManager {
     trigger: AdBreakTrigger,
     options?: { meaningfulPlay?: boolean }
   ): Promise<AdShowResult> {
+    if (!this.isNativeInitialized) {
+      await this.initialize();
+    }
+
     const check = this.controller.canShowAtBreak(trigger, Date.now(), options);
     if (!check.allowed) {
       return { shown: false, reason: check.reason };

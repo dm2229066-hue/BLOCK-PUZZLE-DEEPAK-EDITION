@@ -1133,7 +1133,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({
                 disabled={isAdTransitioning}
                 onClick={() =>
                   runBreakAdAndProceed('between_sessions', resetSession, {
-                    meaningfulPlay: movesUsed >= 4,
+                    meaningfulPlay: movesUsed >= 2,
                   })
                 }
                 className="w-full min-h-[46px] rounded-2xl font-semibold text-sm bg-white/5 hover:bg-white/10 flex items-center justify-center gap-2 disabled:opacity-50"
@@ -1145,7 +1145,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({
                 disabled={isAdTransitioning}
                 onClick={() =>
                   runBreakAdAndProceed('return_to_menu', onExitHome, {
-                    meaningfulPlay: movesUsed >= 4,
+                    meaningfulPlay: movesUsed >= 2,
                   })
                 }
                 className="w-full min-h-[46px] rounded-2xl font-semibold text-sm bg-white/5 hover:bg-white/10 flex items-center justify-center gap-2 disabled:opacity-50"

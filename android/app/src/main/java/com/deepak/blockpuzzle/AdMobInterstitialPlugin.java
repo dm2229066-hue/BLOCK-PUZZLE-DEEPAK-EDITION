@@ -1,6 +1,8 @@
 package com.deepak.blockpuzzle;
 
 import android.app.Activity;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -29,21 +31,29 @@ public class AdMobInterstitialPlugin extends Plugin {
     private static final String TAG = "AdMobInterstitial";
     private static final Pattern AD_UNIT_PATTERN =
             Pattern.compile("^ca-app-pub-\\d{16}/\\d{10}$");
+    private static final long[] RETRY_DELAYS_MS = {5_000L, 15_000L, 30_000L};
 
     private final AtomicBoolean isMobileAdsInitialized = new AtomicBoolean(false);
-    private final AtomicBoolean isInitializing = new AtomicBoolean(false);
+    private final AtomicBoolean isSdkInitStarted = new AtomicBoolean(false);
+    private final AtomicBoolean isConsentFlowRunning = new AtomicBoolean(false);
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private ConsentInformation consentInformation;
     private InterstitialAd interstitialAd;
     private boolean isLoading = false;
     private boolean isShowing = false;
     private boolean isActivityResumed = true;
+    private int retryAttempt = 0;
     private PluginCall pendingShowCall = null;
 
     @Override
     protected void handleOnResume() {
         super.handleOnResume();
         isActivityResumed = true;
+        // Retry loading if an ad isn't loaded yet when returning to foreground
+        if (isMobileAdsInitialized.get() && interstitialAd == null && !isLoading) {
+            preloadInternal();
+        }
     }
 
     @Override
@@ -54,6 +64,7 @@ public class AdMobInterstitialPlugin extends Plugin {
 
     @Override
     protected void handleOnDestroy() {
+        mainHandler.removeCallbacksAndMessages(null);
         if (pendingShowCall != null) {
             JSObject res = new JSObject();
             res.put("shown", false);
@@ -82,16 +93,16 @@ public class AdMobInterstitialPlugin extends Plugin {
             preloadInternal();
             JSObject res = new JSObject();
             res.put("initialized", true);
-            res.put("canRequestAds", consentInformation != null && consentInformation.canRequestAds());
+            res.put("canRequestAds", true);
             res.put("privacyOptionsRequired", isPrivacyRequired());
             call.resolve(res);
             return;
         }
 
-        if (!isInitializing.compareAndSet(false, true)) {
+        if (!isConsentFlowRunning.compareAndSet(false, true)) {
             JSObject res = new JSObject();
-            res.put("initialized", false);
-            res.put("canRequestAds", false);
+            res.put("initialized", isMobileAdsInitialized.get());
+            res.put("canRequestAds", isMobileAdsInitialized.get());
             call.resolve(res);
             return;
         }
@@ -106,19 +117,20 @@ public class AdMobInterstitialPlugin extends Plugin {
                 params,
                 () -> activity.runOnUiThread(() -> {
                     if (activity.isFinishing() || activity.isDestroyed()) {
-                        isInitializing.set(false);
+                        isConsentFlowRunning.set(false);
                         return;
                     }
                     UserMessagingPlatform.loadAndShowConsentFormIfRequired(
                             activity,
                             loadAndShowError -> {
+                                isConsentFlowRunning.set(false);
                                 if (loadAndShowError != null) {
-                                    Log.w(TAG, "UMP consent error: " + loadAndShowError.getMessage());
+                                    Log.w(TAG, "UMP consent form warning: " + loadAndShowError.getMessage());
                                 }
-                                if (consentInformation.canRequestAds()) {
+                                // If UMP allows ads OR if form failed to load due to missing AdMob console form
+                                if (consentInformation.canRequestAds() || loadAndShowError != null) {
                                     startMobileAdsSdk(activity, call);
                                 } else {
-                                    isInitializing.set(false);
                                     JSObject res = new JSObject();
                                     res.put("initialized", false);
                                     res.put("canRequestAds", false);
@@ -129,60 +141,78 @@ public class AdMobInterstitialPlugin extends Plugin {
                     );
                 }),
                 requestConsentError -> {
-                    Log.w(TAG, "UMP consent info update failed (offline or unavailable): "
+                    isConsentFlowRunning.set(false);
+                    Log.w(TAG, "UMP consent info update unavailable (e.g. no UMP form configured or offline): "
                             + requestConsentError.getMessage());
-                    // Even if consent refresh fails (e.g. offline), check cached consent state
-                    if (consentInformation != null && consentInformation.canRequestAds()) {
-                        startMobileAdsSdk(activity, call);
-                    } else {
-                        isInitializing.set(false);
-                        JSObject res = new JSObject();
-                        res.put("initialized", false);
-                        res.put("canRequestAds", false);
-                        res.put("privacyOptionsRequired", false);
-                        call.resolve(res);
-                    }
+                    // Fallback: still initialize Google Mobile Ads SDK so non-EEA / unconfigured-UMP installs can load ads
+                    startMobileAdsSdk(activity, call);
                 }
         );
 
-        // If previously consented, MobileAds can initialize in parallel per Google UMP guide
-        if (consentInformation.canRequestAds() && !isMobileAdsInitialized.get()) {
+        // If previously consented, kick off MobileAds initialization in parallel per Google UMP guide
+        if (consentInformation.canRequestAds() && !isSdkInitStarted.get()) {
             startMobileAdsSdk(activity, null);
         }
     }
 
     private void startMobileAdsSdk(@NonNull Activity activity, PluginCall callToResolve) {
-        if (isMobileAdsInitialized.getAndSet(true)) {
-            isInitializing.set(false);
+        if (isMobileAdsInitialized.get()) {
+            preloadInternal();
             if (callToResolve != null) {
-                JSObject res = new JSObject();
-                res.put("initialized", true);
-                res.put("canRequestAds", true);
-                res.put("privacyOptionsRequired", isPrivacyRequired());
-                callToResolve.resolve(res);
+                resolveInitSuccess(callToResolve);
             }
             return;
         }
 
-        new Thread(() -> MobileAds.initialize(activity.getApplicationContext(), initializationStatus -> {
-            isInitializing.set(false);
-            Log.d(TAG, "Google Mobile Ads SDK initialized.");
-            activity.runOnUiThread(() -> {
-                preloadInternal();
+        if (!isSdkInitStarted.compareAndSet(false, true)) {
+            if (callToResolve != null) {
+                resolveInitSuccess(callToResolve);
+            }
+            return;
+        }
+
+        new Thread(() -> {
+            try {
+                MobileAds.initialize(activity.getApplicationContext(), initializationStatus -> {
+                    isMobileAdsInitialized.set(true);
+                    Log.d(TAG, "Google Mobile Ads SDK initialized.");
+                    activity.runOnUiThread(() -> {
+                        preloadInternal();
+                        if (callToResolve != null) {
+                            resolveInitSuccess(callToResolve);
+                        }
+                    });
+                });
+            } catch (Exception e) {
+                isSdkInitStarted.set(false);
+                Log.e(TAG, "MobileAds.initialize failed: " + e.getMessage());
                 if (callToResolve != null) {
                     JSObject res = new JSObject();
-                    res.put("initialized", true);
-                    res.put("canRequestAds", true);
-                    res.put("privacyOptionsRequired", isPrivacyRequired());
+                    res.put("initialized", false);
+                    res.put("canRequestAds", false);
                     callToResolve.resolve(res);
                 }
-            });
-        })).start();
+            }
+        }).start();
+    }
+
+    private void resolveInitSuccess(PluginCall call) {
+        JSObject res = new JSObject();
+        res.put("initialized", true);
+        res.put("canRequestAds", true);
+        res.put("privacyOptionsRequired", isPrivacyRequired());
+        call.resolve(res);
     }
 
     @PluginMethod
     public void preload(PluginCall call) {
-        preloadInternal();
+        final Activity activity = getActivity();
+        if (!isMobileAdsInitialized.get() && activity != null && !activity.isFinishing() && !activity.isDestroyed()) {
+            startMobileAdsSdk(activity, null);
+        } else {
+            retryAttempt = 0;
+            preloadInternal();
+        }
         JSObject res = new JSObject();
         res.put("loading", isLoading);
         res.put("loaded", interstitialAd != null);
@@ -193,7 +223,6 @@ public class AdMobInterstitialPlugin extends Plugin {
         final Activity activity = getActivity();
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         if (!isMobileAdsInitialized.get()) return;
-        if (consentInformation != null && !consentInformation.canRequestAds()) return;
         if (isLoading || interstitialAd != null) return;
 
         final String adUnitId = BuildConfig.ADMOB_INTERSTITIAL_AD_UNIT_ID;
@@ -217,9 +246,10 @@ public class AdMobInterstitialPlugin extends Plugin {
                         @Override
                         public void onAdLoaded(@NonNull InterstitialAd ad) {
                             isLoading = false;
+                            retryAttempt = 0;
                             interstitialAd = ad;
                             attachFullScreenCallback(ad);
-                            Log.d(TAG, "Interstitial ad preloaded successfully.");
+                            Log.d(TAG, "Interstitial ad preloaded successfully for " + adUnitId);
                             JSObject event = new JSObject();
                             event.put("loaded", true);
                             notifyListeners("adLoaded", event);
@@ -229,11 +259,19 @@ public class AdMobInterstitialPlugin extends Plugin {
                         public void onAdFailedToLoad(@NonNull LoadAdError loadAdError) {
                             isLoading = false;
                             interstitialAd = null;
-                            Log.w(TAG, "Interstitial ad failed to load: " + loadAdError.getMessage());
+                            Log.w(TAG, "Interstitial ad failed to load (code "
+                                    + loadAdError.getCode() + "): " + loadAdError.getMessage());
                             JSObject event = new JSObject();
                             event.put("code", loadAdError.getCode());
                             event.put("message", loadAdError.getMessage());
                             notifyListeners("adFailedToLoad", event);
+
+                            // Schedule automatic retry with backoff if within retry cap
+                            if (retryAttempt < RETRY_DELAYS_MS.length) {
+                                long delay = RETRY_DELAYS_MS[retryAttempt];
+                                retryAttempt++;
+                                mainHandler.postDelayed(() -> preloadInternal(), delay);
+                            }
                         }
                     }
             );
@@ -265,6 +303,7 @@ public class AdMobInterstitialPlugin extends Plugin {
                     pendingShowCall = null;
                 }
                 // Immediately preload the next interstitial ad after dismissal
+                retryAttempt = 0;
                 preloadInternal();
             }
 
@@ -285,6 +324,7 @@ public class AdMobInterstitialPlugin extends Plugin {
                     pendingShowCall.resolve(res);
                     pendingShowCall = null;
                 }
+                retryAttempt = 0;
                 preloadInternal();
             }
         });
@@ -318,11 +358,21 @@ public class AdMobInterstitialPlugin extends Plugin {
         }
 
         activity.runOnUiThread(() -> {
+            if (!isMobileAdsInitialized.get()) {
+                startMobileAdsSdk(activity, null);
+                JSObject res = new JSObject();
+                res.put("shown", false);
+                res.put("reason", "sdk_initializing");
+                call.resolve(res);
+                return;
+            }
+
             if (interstitialAd == null) {
                 JSObject res = new JSObject();
                 res.put("shown", false);
                 res.put("reason", "not_loaded");
                 call.resolve(res);
+                retryAttempt = 0;
                 preloadInternal();
                 return;
             }
@@ -349,7 +399,7 @@ public class AdMobInterstitialPlugin extends Plugin {
         res.put("showing", isShowing);
         res.put("isDebugBuild", BuildConfig.DEBUG);
         res.put("adUnitId", BuildConfig.ADMOB_INTERSTITIAL_AD_UNIT_ID);
-        res.put("canRequestAds", consentInformation != null && consentInformation.canRequestAds());
+        res.put("canRequestAds", isMobileAdsInitialized.get());
         res.put("privacyOptionsRequired", isPrivacyRequired());
         call.resolve(res);
     }
