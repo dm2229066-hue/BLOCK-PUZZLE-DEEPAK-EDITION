@@ -19,16 +19,24 @@ export interface AdStatusResult {
   showing: boolean;
   isDebugBuild: boolean;
   adUnitId: string;
+  bannerAdUnitId?: string;
+  bannerLoaded?: boolean;
+  bannerLoading?: boolean;
+  bannerVisible?: boolean;
   canRequestAds: boolean;
   privacyOptionsRequired: boolean;
   lastLoadErrorCode?: number;
   lastLoadErrorMessage?: string;
+  bannerLastLoadErrorCode?: number;
+  bannerLastLoadErrorMessage?: string;
 }
 
 interface AdMobInterstitialNativePlugin {
   initialize(): Promise<AdInitResult>;
   preload(): Promise<{ loading: boolean; loaded: boolean }>;
   showIfLoaded(): Promise<AdShowResult>;
+  showBanner(): Promise<{ bannerEnabled: boolean; bannerLoaded: boolean }>;
+  hideBanner(): Promise<void>;
   getStatus(): Promise<AdStatusResult>;
   showPrivacyOptionsForm(): Promise<{ canRequestAds: boolean }>;
   addListener(
@@ -38,7 +46,9 @@ interface AdMobInterstitialNativePlugin {
       | 'adOpened'
       | 'adDismissed'
       | 'adFailedToShow'
-      | 'adImpression',
+      | 'adImpression'
+      | 'bannerLoaded'
+      | 'bannerFailedToLoad',
     listenerFunc: (data: Record<string, unknown>) => void
   ): Promise<{ remove: () => Promise<void> }>;
 }
@@ -254,6 +264,27 @@ class AdManager {
       await this.preloadNext();
     } catch {
       // ignore
+    }
+  }
+
+  public async showBanner(): Promise<void> {
+    if (!Capacitor.isNativePlatform()) return;
+    try {
+      if (!this.isNativeInitialized) {
+        await this.initialize();
+      }
+      await AdMobInterstitial.showBanner();
+    } catch {
+      // Ignore banner errors; never block gameplay
+    }
+  }
+
+  public async hideBanner(): Promise<void> {
+    if (!Capacitor.isNativePlatform()) return;
+    try {
+      await AdMobInterstitial.hideBanner();
+    } catch {
+      // Ignore
     }
   }
 

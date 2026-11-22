@@ -1,11 +1,23 @@
 package com.deepak.blockpuzzle;
 
 import android.app.Activity;
+import android.graphics.Color;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewParent;
+import android.webkit.WebView;
+import android.widget.FrameLayout;
 
 import androidx.annotation.NonNull;
+import androidx.coordinatorlayout.widget.CoordinatorLayout;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -13,7 +25,10 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.google.android.gms.ads.AdError;
+import com.google.android.gms.ads.AdListener;
 import com.google.android.gms.ads.AdRequest;
+import com.google.android.gms.ads.AdSize;
+import com.google.android.gms.ads.AdView;
 import com.google.android.gms.ads.FullScreenContentCallback;
 import com.google.android.gms.ads.LoadAdError;
 import com.google.android.gms.ads.MobileAds;
@@ -43,6 +58,8 @@ public class AdMobInterstitialPlugin extends Plugin {
     private final List<PluginCall> pendingInitCalls = new ArrayList<>();
 
     private ConsentInformation consentInformation;
+
+    // Interstitial state
     private InterstitialAd interstitialAd;
     private boolean isLoading = false;
     private boolean isShowing = false;
@@ -52,21 +69,46 @@ public class AdMobInterstitialPlugin extends Plugin {
     private String lastLoadErrorMessage = "";
     private PluginCall pendingShowCall = null;
 
+    // Banner state
+    private FrameLayout bannerContainer;
+    private AdView bannerAdView;
+    private AdSize bannerAdSize;
+    private boolean bannerEnabled = true;
+    private boolean isBannerLoaded = false;
+    private boolean isBannerLoading = false;
+    private int bannerRetryAttempt = 0;
+    private int bannerBottomInsetPx = 0;
+    private int bannerLastLoadErrorCode = 0;
+    private String bannerLastLoadErrorMessage = "";
+
     private final Runnable retryLoadRunnable = this::preloadInternal;
+    private final Runnable retryBannerRunnable = this::loadBannerInternal;
 
     @Override
     protected void handleOnResume() {
         super.handleOnResume();
         isActivityResumed = true;
-        if (isMobileAdsInitialized.get() && interstitialAd == null && !isLoading) {
-            retryAttempt = 0;
-            preloadInternal();
+        if (bannerAdView != null) {
+            bannerAdView.resume();
+        }
+        if (isMobileAdsInitialized.get()) {
+            if (interstitialAd == null && !isLoading) {
+                retryAttempt = 0;
+                preloadInternal();
+            }
+            if (bannerEnabled && !isBannerLoaded && !isBannerLoading) {
+                bannerRetryAttempt = 0;
+                loadBannerInternal();
+            }
         }
     }
 
     @Override
     protected void handleOnPause() {
         isActivityResumed = false;
+        if (bannerAdView != null) {
+            bannerAdView.pause();
+        }
         super.handleOnPause();
     }
 
@@ -84,6 +126,8 @@ public class AdMobInterstitialPlugin extends Plugin {
         interstitialAd = null;
         isLoading = false;
         isShowing = false;
+
+        destroyBannerView();
         super.handleOnDestroy();
     }
 
@@ -108,6 +152,9 @@ public class AdMobInterstitialPlugin extends Plugin {
 
         if (isMobileAdsInitialized.get()) {
             preloadInternal();
+            if (bannerEnabled) {
+                loadBannerInternal();
+            }
             resolveInitResult(call, true, true);
             return;
         }
@@ -115,9 +162,6 @@ public class AdMobInterstitialPlugin extends Plugin {
         pendingInitCalls.add(call);
 
         if (!isConsentFlowRunning.compareAndSet(false, true)) {
-            if (isSdkInitStarted.get()) {
-                return;
-            }
             return;
         }
 
@@ -201,6 +245,9 @@ public class AdMobInterstitialPlugin extends Plugin {
     private void startMobileAdsSdk(@NonNull Activity activity) {
         if (isMobileAdsInitialized.get()) {
             preloadInternal();
+            if (bannerEnabled) {
+                loadBannerInternal();
+            }
             resolvePendingInitCalls(true, true);
             return;
         }
@@ -216,6 +263,9 @@ public class AdMobInterstitialPlugin extends Plugin {
                             isMobileAdsInitialized.set(true);
                             Log.d(TAG, "Google Mobile Ads SDK initialized.");
                             preloadInternal();
+                            if (bannerEnabled) {
+                                loadBannerInternal();
+                            }
                             resolvePendingInitCalls(true, true);
                         })
                 );
@@ -245,6 +295,8 @@ public class AdMobInterstitialPlugin extends Plugin {
             resolveInitResult(c, initialized, canRequestAds);
         }
     }
+
+    // ==================== INTERSTITIAL ADS ====================
 
     @PluginMethod
     public void preload(PluginCall call) {
@@ -443,6 +495,241 @@ public class AdMobInterstitialPlugin extends Plugin {
         });
     }
 
+    // ==================== BANNER ADS ====================
+
+    @PluginMethod
+    public void showBanner(PluginCall call) {
+        mainHandler.post(() -> {
+            bannerEnabled = true;
+            final Activity activity = getActivity();
+            if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+                call.resolve();
+                return;
+            }
+            if (!isMobileAdsInitialized.get()) {
+                startMobileAdsSdk(activity);
+            } else if (isBannerLoaded && bannerContainer != null) {
+                bannerContainer.setVisibility(View.VISIBLE);
+                updateWebViewBottomMargin();
+            } else if (!isBannerLoading) {
+                bannerRetryAttempt = 0;
+                loadBannerInternal();
+            }
+            JSObject res = new JSObject();
+            res.put("bannerEnabled", true);
+            res.put("bannerLoaded", isBannerLoaded);
+            call.resolve(res);
+        });
+    }
+
+    @PluginMethod
+    public void hideBanner(PluginCall call) {
+        mainHandler.post(() -> {
+            bannerEnabled = false;
+            mainHandler.removeCallbacks(retryBannerRunnable);
+            if (bannerContainer != null) {
+                bannerContainer.setVisibility(View.GONE);
+            }
+            updateWebViewBottomMargin();
+            call.resolve();
+        });
+    }
+
+    private void loadBannerInternal() {
+        final Activity activity = getActivity();
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        if (!isMobileAdsInitialized.get() || !bannerEnabled) return;
+
+        final String bannerAdUnitId = BuildConfig.ADMOB_BANNER_AD_UNIT_ID;
+        if (bannerAdUnitId == null || !AD_UNIT_PATTERN.matcher(bannerAdUnitId).matches()) {
+            Log.e(TAG, "Invalid Banner Ad Unit ID format: " + bannerAdUnitId);
+            return;
+        }
+
+        if (isBannerLoading) return;
+
+        ensureBannerContainer(activity);
+        if (bannerContainer == null) return;
+
+        if (bannerAdView != null && isBannerLoaded) {
+            bannerContainer.setVisibility(View.VISIBLE);
+            updateWebViewBottomMargin();
+            return;
+        }
+
+        mainHandler.removeCallbacks(retryBannerRunnable);
+
+        if (bannerAdView == null) {
+            DisplayMetrics dm = activity.getResources().getDisplayMetrics();
+            float density = dm.density > 0 ? dm.density : 1f;
+            int adWidthDp = Math.max(320, Math.round(dm.widthPixels / density));
+            AdSize adaptiveSize = AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(activity, adWidthDp);
+            if (adaptiveSize.getHeightInPixels(activity) <= 0) {
+                adaptiveSize = AdSize.BANNER;
+            }
+            bannerAdSize = adaptiveSize;
+
+            AdView adView = new AdView(activity);
+            adView.setAdUnitId(bannerAdUnitId);
+            adView.setAdSize(adaptiveSize);
+            adView.setAdListener(new AdListener() {
+                @Override
+                public void onAdLoaded() {
+                    isBannerLoading = false;
+                    isBannerLoaded = true;
+                    bannerRetryAttempt = 0;
+                    bannerLastLoadErrorCode = 0;
+                    bannerLastLoadErrorMessage = "";
+                    Log.d(TAG, "Banner ad loaded successfully for " + bannerAdUnitId);
+
+                    if (bannerContainer != null) {
+                        bannerContainer.setVisibility(bannerEnabled ? View.VISIBLE : View.GONE);
+                    }
+                    updateWebViewBottomMargin();
+
+                    JSObject event = new JSObject();
+                    event.put("loaded", true);
+                    notifyListeners("bannerLoaded", event);
+                }
+
+                @Override
+                public void onAdFailedToLoad(@NonNull LoadAdError loadAdError) {
+                    isBannerLoading = false;
+                    bannerLastLoadErrorCode = loadAdError.getCode();
+                    bannerLastLoadErrorMessage = loadAdError.getMessage();
+                    Log.w(TAG, "Banner ad failed to load (code "
+                            + loadAdError.getCode() + "): " + loadAdError.getMessage());
+
+                    if (!isBannerLoaded && bannerContainer != null) {
+                        bannerContainer.setVisibility(View.GONE);
+                        updateWebViewBottomMargin();
+                    }
+
+                    JSObject event = new JSObject();
+                    event.put("code", loadAdError.getCode());
+                    event.put("message", loadAdError.getMessage());
+                    notifyListeners("bannerFailedToLoad", event);
+
+                    if (bannerEnabled && isActivityResumed && bannerRetryAttempt < RETRY_DELAYS_MS.length) {
+                        long delay = RETRY_DELAYS_MS[bannerRetryAttempt];
+                        bannerRetryAttempt++;
+                        mainHandler.removeCallbacks(retryBannerRunnable);
+                        mainHandler.postDelayed(retryBannerRunnable, delay);
+                    }
+                }
+            });
+
+            bannerAdView = adView;
+            bannerContainer.removeAllViews();
+            FrameLayout.LayoutParams adLp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER_HORIZONTAL | Gravity.TOP
+            );
+            bannerContainer.addView(adView, adLp);
+        }
+
+        isBannerLoading = true;
+        bannerAdView.loadAd(new AdRequest.Builder().build());
+    }
+
+    private void ensureBannerContainer(@NonNull Activity activity) {
+        if (bannerContainer != null) return;
+        if (getBridge() == null) return;
+        final WebView webView = getBridge().getWebView();
+        if (webView == null) return;
+        final ViewParent parent = webView.getParent();
+        if (!(parent instanceof ViewGroup)) return;
+
+        final ViewGroup rootGroup = (ViewGroup) parent;
+        final FrameLayout container = new FrameLayout(activity);
+        container.setBackgroundColor(Color.parseColor("#14110f"));
+        container.setVisibility(View.GONE);
+
+        ViewGroup.LayoutParams containerLp;
+        if (rootGroup instanceof CoordinatorLayout) {
+            CoordinatorLayout.LayoutParams clp = new CoordinatorLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            );
+            clp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+            containerLp = clp;
+        } else {
+            containerLp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
+            );
+        }
+
+        ViewCompat.setOnApplyWindowInsetsListener(container, (v, insets) -> {
+            Insets sysInsets = insets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout()
+            );
+            if (sysInsets.bottom != bannerBottomInsetPx) {
+                bannerBottomInsetPx = sysInsets.bottom;
+                v.setPadding(0, 0, 0, bannerBottomInsetPx);
+                mainHandler.post(this::updateWebViewBottomMargin);
+            }
+            return insets;
+        });
+
+        container.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            if ((bottom - top) != (oldBottom - oldTop)) {
+                mainHandler.post(this::updateWebViewBottomMargin);
+            }
+        });
+
+        rootGroup.addView(container, containerLp);
+        ViewCompat.requestApplyInsets(container);
+        bannerContainer = container;
+    }
+
+    private void updateWebViewBottomMargin() {
+        final Activity activity = getActivity();
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        if (getBridge() == null) return;
+        final WebView webView = getBridge().getWebView();
+        if (webView == null) return;
+
+        ViewGroup.LayoutParams rawLp = webView.getLayoutParams();
+        if (!(rawLp instanceof ViewGroup.MarginLayoutParams)) return;
+        ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) rawLp;
+
+        int targetMargin = 0;
+        if (bannerEnabled && isBannerLoaded && bannerContainer != null && bannerContainer.getVisibility() == View.VISIBLE) {
+            int measured = bannerContainer.getHeight();
+            if (measured > 0) {
+                targetMargin = measured;
+            } else if (bannerAdSize != null) {
+                targetMargin = bannerAdSize.getHeightInPixels(activity) + bannerBottomInsetPx;
+            }
+        }
+
+        if (lp.bottomMargin != targetMargin) {
+            lp.bottomMargin = targetMargin;
+            webView.setLayoutParams(lp);
+        }
+    }
+
+    private void destroyBannerView() {
+        isBannerLoaded = false;
+        isBannerLoading = false;
+        if (bannerAdView != null) {
+            bannerAdView.destroy();
+            bannerAdView = null;
+        }
+        if (bannerContainer != null) {
+            ViewParent parent = bannerContainer.getParent();
+            if (parent instanceof ViewGroup) {
+                ((ViewGroup) parent).removeView(bannerContainer);
+            }
+            bannerContainer = null;
+        }
+    }
+
+    // ==================== STATUS & PRIVACY ====================
+
     @PluginMethod
     public void getStatus(PluginCall call) {
         mainHandler.post(() -> {
@@ -453,10 +740,17 @@ public class AdMobInterstitialPlugin extends Plugin {
             res.put("showing", isShowing);
             res.put("isDebugBuild", BuildConfig.DEBUG);
             res.put("adUnitId", BuildConfig.ADMOB_INTERSTITIAL_AD_UNIT_ID);
+            res.put("bannerAdUnitId", BuildConfig.ADMOB_BANNER_AD_UNIT_ID);
+            res.put("bannerLoaded", isBannerLoaded);
+            res.put("bannerLoading", isBannerLoading);
+            res.put("bannerVisible", bannerEnabled && isBannerLoaded && bannerContainer != null
+                    && bannerContainer.getVisibility() == View.VISIBLE);
             res.put("canRequestAds", isMobileAdsInitialized.get());
             res.put("privacyOptionsRequired", isPrivacyRequired());
             res.put("lastLoadErrorCode", lastLoadErrorCode);
             res.put("lastLoadErrorMessage", lastLoadErrorMessage);
+            res.put("bannerLastLoadErrorCode", bannerLastLoadErrorCode);
+            res.put("bannerLastLoadErrorMessage", bannerLastLoadErrorMessage);
             call.resolve(res);
         });
     }
