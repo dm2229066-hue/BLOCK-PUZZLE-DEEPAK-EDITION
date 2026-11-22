@@ -5,10 +5,9 @@
 - **Package ID**: `com.deepak.blockpuzzle`
 - **Orientation**: Portrait (`android:screenOrientation="portrait"`)
 - **AdMob App ID**: `ca-app-pub-7496793317592044~9873540371` (configured in `android/app/src/main/AndroidManifest.xml`)
-- **Interstitial Ad Unit IDs** (`android/app/build.gradle`):
-  - **Debug Builds (`assembleDebug`)**: Uses Google's official Interstitial Test Ad Unit ID `ca-app-pub-3940256099942544/1033173712` automatically so development/testing never generates invalid live impressions.
-  - **Release Builds (`assembleRelease`)**: Configured with `ca-app-pub-7496793317592044/4680923440`.
-    > **IMPORTANT**: Before publishing a release APK, confirm in your Google AdMob dashboard that `ca-app-pub-7496793317592044/4680923440` was created specifically with format **Interstitial** (not Banner, Rewarded, or App Open).
+- **Interstitial Ad Unit ID** (`android/app/build.gradle`):
+  - **All Builds (`defaultConfig`)**: Configured with your live Interstitial Ad Unit ID `ca-app-pub-7496793317592044/4680923440`.
+    > **IMPORTANT**: Ensure in your Google AdMob dashboard that `ca-app-pub-7496793317592044/4680923440` is an **Interstitial** format ad unit, and avoid clicking your own live ads during testing (add your phone as a Test Device in AdMob Console or via Logcat if needed).
 
 ---
 
@@ -19,7 +18,7 @@
 
 ---
 
-## 3. Sync Web Build & Generate Debug APK (Test Ads Active)
+## 3. Sync Web Build & Generate Debug APK
 From the project root directory:
 
 ```bash
@@ -32,7 +31,7 @@ npm run build
 # 3. Copy web assets and sync Capacitor plugins into android/
 npx cap sync android
 
-# 4. Build the Debug APK via Gradle (uses Google Test Interstitial Ad Unit ID)
+# 4. Build the Debug APK via Gradle
 cd android
 ./gradlew assembleDebug
 ```
@@ -100,7 +99,7 @@ Verify the following on a physical Android device or Android Emulator with Googl
 3. **Every-3-Levels Frequency Gate**:
    - Complete Level 1 and tap **Next Level** → NO ad shown.
    - Complete Level 2 and tap **Next Level** → NO ad shown.
-   - Complete Level 3 and tap **Next Level** → Google Test Interstitial Ad displays full-screen (provided >= 120s since any previous ad), audio pauses during ad, audio resumes on dismissal, and next ad preloads immediately (`Interstitial ad preloaded successfully.`).
+   - Complete Level 3 and tap **Next Level** → Interstitial Ad (`ca-app-pub-7496793317592044/4680923440`) displays full-screen (provided >= 120s since any previous ad), audio pauses during ad, audio resumes on dismissal, and next ad preloads immediately (`Interstitial ad preloaded successfully.`).
 4. **120-Second Minimum Cooldown**:
    - Trigger a Game Over within 120 seconds of the previous interstitial → NO ad shown; game restarts immediately.
    - Wait >= 120 seconds, trigger Game Over or return to menu after meaningful play (`>= 4` moves) → preloaded interstitial shows cleanly.
