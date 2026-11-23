@@ -37,12 +37,51 @@ jobs:
         run: chmod +x gradlew
         working-directory: android
 
-      - name: Build APK
-        run: ./gradlew assembleDebug
+      - name: Prepare release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          KEYSTORE_PATH="$RUNNER_TEMP/release.keystore"
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$KEYSTORE_PATH"
+            echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+            echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "Configured release signing from GitHub Secrets."
+          else
+            echo "::warning::Release keystore secrets not configured. Generating temporary signing keystore for this CI run; add ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD secrets for Play Store releases."
+            CI_PASS="$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20)"
+            echo "::add-mask::$CI_PASS"
+            keytool -genkeypair -noprompt \
+              -keystore "$KEYSTORE_PATH" \
+              -storepass "$CI_PASS" \
+              -alias blockpuzzle_ci_release \
+              -keypass "$CI_PASS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Block Puzzle,O=Deepak Edition,C=IN"
+            echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+            echo "ANDROID_KEYSTORE_PASSWORD=$CI_PASS" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=blockpuzzle_ci_release" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=$CI_PASS" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease
         working-directory: android
 
-      - name: Upload APK
+      - name: Clean up temporary keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore"
+
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Deepak-Game-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: Deepak-Game-Release-APK
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error

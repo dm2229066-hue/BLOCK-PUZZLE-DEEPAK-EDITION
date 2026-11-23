@@ -1,5 +1,31 @@
 apply plugin: 'com.android.application'
 
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+
+def releaseStorePath = System.getenv("ANDROID_KEYSTORE_PATH") ?: keystoreProperties.getProperty("storeFile")
+def releaseStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: keystoreProperties.getProperty("storePassword")
+def releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: keystoreProperties.getProperty("keyAlias")
+def releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: keystoreProperties.getProperty("keyPassword")
+
+def resolveKeystoreFile = { String pathStr ->
+    if (!pathStr) return null
+    File direct = new File(pathStr)
+    if (direct.isAbsolute()) return direct
+    File fromApp = file(pathStr)
+    if (fromApp.exists()) return fromApp
+    return rootProject.file(pathStr)
+}
+
+def resolvedStoreFile = resolveKeystoreFile(releaseStorePath)
+def hasReleaseSigning = resolvedStoreFile != null && resolvedStoreFile.exists() &&
+        releaseStorePassword != null && !releaseStorePassword.trim().isEmpty() &&
+        releaseKeyAlias != null && !releaseKeyAlias.trim().isEmpty() &&
+        releaseKeyPassword != null && !releaseKeyPassword.trim().isEmpty()
+
 android {
     namespace = "com.deepak.blockpuzzle"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -21,10 +47,23 @@ android {
     buildFeatures {
         buildConfig true
     }
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile resolvedStoreFile
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
     buildTypes {
         debug {
         }
         release {
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
